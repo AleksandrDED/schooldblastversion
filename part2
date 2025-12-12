@@ -1,0 +1,138 @@
+Задание: Реализовать процедуры добавления проверок и триггеры для автоматического обновления данных
+
+-- Процедура добавления P2P-проверки
+-- Если состояние 'Start' — создаётся новая запись в Checks и стартовая запись в P2P
+-- Если 'Success' или 'Failure' — завершается ранее начатая проверка тем же проверяющим
+CREATE OR REPLACE PROCEDURE add_p2p_check(
+    checked_peer VARCHAR,      -- Кого проверяют (сдающий)
+    checking_peer VARCHAR,     -- Кто проверяет
+    task_title VARCHAR,        -- Название задачи
+    p2p_state check_status,    -- Состояние: Start/Success/Failure
+    check_time TIME            -- Время
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    check_id BIGINT;
+BEGIN
+    IF p2p_state = 'Start' THEN
+        -- Создаём новую проверку
+        INSERT INTO Checks (Peer, Task, Date)
+        VALUES (checked_peer, task_title, CURRENT_DATE)
+        RETURNING ID INTO check_id;
+
+        -- Добавляем стартовую запись P2P
+        INSERT INTO P2P ("Check", CheckingPeer, State, Time)
+        VALUES (check_id, checking_peer, 'Start', check_time);
+    ELSE
+        -- Ищем незавершённую проверку этого же проверяющего
+        SELECT c.ID INTO check_id
+        FROM Checks c
+        JOIN P2P p ON p."Check" = c.ID
+        WHERE c.Peer = checked_peer
+          AND c.Task = task_title
+          AND p.CheckingPeer = checking_peer
+          AND p.State = 'Start'
+          AND NOT EXISTS (
+              SELECT 1 FROM P2P p2
+              WHERE p2."Check" = c.ID
+                AND p2.State IN ('Success', 'Failure')
+                AND p2.Time > p.Time
+          )
+        ORDER BY c.Date DESC, p.Time DESC
+        LIMIT 1;
+
+        IF check_id IS NULL THEN
+            RAISE EXCEPTION 'Нет начатой P2P-проверки для завершения этим проверяющим';
+        END IF;
+
+        -- Добавляем завершающую запись
+        INSERT INTO P2P ("Check", CheckingPeer, State, Time)
+        VALUES (check_id, checking_peer, p2p_state, check_time);
+    END IF;
+END;
+$$;
+
+-- Процедура добавления проверки Verter
+-- Добавляется только одна запись: Success или Failure
+-- Находит последнюю завершённую успешную P2P-проверку без Verter
+CREATE OR REPLACE PROCEDURE add_verter_check(
+    checked_peer VARCHAR,
+    task_title VARCHAR,
+    verter_state check_status,
+    check_time TIME
+)
+LANGUAGE plpgsql AS $$
+DECLARE
+    check_id BIGINT;
+BEGIN
+    IF verter_state = 'Start' THEN
+        RAISE EXCEPTION 'В данной реализации Verter добавляется сразу Success/Failure';
+    END IF;
+
+    SELECT c.ID INTO check_id
+    FROM Checks c
+    JOIN P2P p ON p."Check" = c.ID AND p.State = 'Success'
+    WHERE c.Peer = checked_peer
+      AND c.Task = task_title
+      AND NOT EXISTS (SELECT 1 FROM P2P p2 WHERE p2."Check" = c.ID AND p2.State = 'Start')  -- нет открытой
+      AND NOT EXISTS (SELECT 1 FROM Verter v WHERE v."Check" = c.ID)  -- Verter ещё не был
+    ORDER BY c.Date DESC, c.ID DESC
+    LIMIT 1;
+
+    IF check_id IS NULL THEN
+        RAISE EXCEPTION 'Нет завершённой успешной P2P-проверки или Verter уже добавлен';
+    END IF;
+
+    INSERT INTO Verter ("Check", State, Time)
+    VALUES (check_id, verter_state, check_time);
+END;
+$$;
+
+-- Триггер: при каждой начатой P2P-проверке (State = 'Start') добавляем/обновляем очки в TransferredPoints
+CREATE OR REPLACE FUNCTION fn_trg_p2p_transfer()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.State = 'Start' THEN
+        INSERT INTO TransferredPoints (CheckingPeer, CheckedPeer, PointsAmount)
+        VALUES (NEW.CheckingPeer, (SELECT Peer FROM Checks WHERE ID = NEW."Check"), 1)
+        ON CONFLICT (CheckingPeer, CheckedPeer)
+        DO UPDATE SET PointsAmount = TransferredPoints.PointsAmount + 1;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_p2p_transfer
+AFTER INSERT ON P2P
+FOR EACH ROW EXECUTE FUNCTION fn_trg_p2p_transfer();
+
+-- Триггер: проверка корректности добавления XP
+-- Условия: XP ≤ MaxXP, есть успешная P2P, нет Failure от Verter
+CREATE OR REPLACE FUNCTION fn_trg_check_xp()
+RETURNS TRIGGER AS $$
+DECLARE
+    max_xp INTEGER;
+BEGIN
+    SELECT MaxXP INTO max_xp
+    FROM Tasks t JOIN Checks c ON c.Task = t.Title
+    WHERE c.ID = NEW."Check";
+
+    IF NEW.XPAmount > max_xp THEN
+        RAISE EXCEPTION 'XPAmount (%) превышает MaxXP (%)', NEW.XPAmount, max_xp;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM P2P WHERE "Check" = NEW."Check" AND State = 'Success') THEN
+        RAISE EXCEPTION 'Нет успешной P2P-проверки';
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM Verter WHERE "Check" = NEW."Check" AND State = 'Failure') THEN
+        RAISE EXCEPTION 'Verter вернул Failure';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_xp
+BEFORE INSERT ON XP
+FOR EACH ROW EXECUTE FUNCTION fn_trg_check_xp();
