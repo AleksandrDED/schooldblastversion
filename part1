@@ -1,0 +1,99 @@
+-- part1.sql
+-- Задание: Создать все таблицы и типы данных согласно логической схеме Info21 v1.0
+
+-- Тип перечисления для статуса проверки (Start, Success, Failure)
+-- Используется в таблицах P2P и Verter
+CREATE TYPE check_status AS ENUM ('Start', 'Success', 'Failure');
+
+-- Таблица Peers: информация о пирах (студентах)
+CREATE TABLE Peers (
+    Nickname VARCHAR PRIMARY KEY,       -- Уникальный никнейм пира
+    Birthday DATE NOT NULL              -- Дата рождения
+);
+
+-- Таблица Tasks: информация о задачах
+CREATE TABLE Tasks (
+    Title VARCHAR PRIMARY KEY,          -- Название задачи (уникальное)
+    ParentTask VARCHAR,                 -- Ссылка на родительскую задачу (может быть NULL)
+    MaxXP INTEGER NOT NULL CHECK (MaxXP > 0),  -- Максимальное количество XP за задачу
+    FOREIGN KEY (ParentTask) REFERENCES Tasks(Title)  -- Рекурсивная связь для цепочки задач
+);
+
+-- Таблица Checks: записи о проверках задач
+CREATE TABLE Checks (
+    ID BIGSERIAL PRIMARY KEY,           -- Автоинкрементный ID проверки
+    Peer VARCHAR NOT NULL,              -- Кто сдаёт задачу
+    Task VARCHAR NOT NULL,              -- Какая задача проверяется
+    Date DATE NOT NULL,                 -- Дата проверки
+    FOREIGN KEY (Peer) REFERENCES Peers(Nickname),
+    FOREIGN KEY (Task) REFERENCES Tasks(Title)
+);
+
+-- Таблица P2P: записи о P2P-проверках (peer-to-peer)
+CREATE TABLE P2P (
+    ID BIGSERIAL PRIMARY KEY,
+    "Check" BIGINT NOT NULL,            -- Ссылка на проверку в таблице Checks
+    CheckingPeer VARCHAR NOT NULL,      -- Кто проверяет
+    State check_status NOT NULL,        -- Статус: Start, Success или Failure
+    Time TIME NOT NULL,                 -- Время записи
+    FOREIGN KEY ("Check") REFERENCES Checks(ID),
+    FOREIGN KEY (CheckingPeer) REFERENCES Peers(Nickname)
+);
+
+-- Таблица Verter: записи о проверках автоматической системой Verter
+CREATE TABLE Verter (
+    ID BIGSERIAL PRIMARY KEY,
+    "Check" BIGINT NOT NULL,            -- Ссылка на проверку
+    State check_status NOT NULL,        -- Статус: Success или Failure (Start обычно не используется)
+    Time TIME NOT NULL,
+    FOREIGN KEY ("Check") REFERENCES Checks(ID)
+);
+
+-- Таблица TransferredPoints: количество переданных очков между пирами во время P2P-проверок
+CREATE TABLE TransferredPoints (
+    ID BIGSERIAL PRIMARY KEY,
+    CheckingPeer VARCHAR NOT NULL,      -- Кто проверял
+    CheckedPeer VARCHAR NOT NULL,       -- Кого проверяли
+    PointsAmount INTEGER NOT NULL CHECK (PointsAmount > 0),  -- Количество очков
+    FOREIGN KEY (CheckingPeer) REFERENCES Peers(Nickname),
+    FOREIGN KEY (CheckedPeer) REFERENCES Peers(Nickname)
+);
+
+-- Таблица Friends: дружеские связи между пирами
+CREATE TABLE Friends (
+    ID BIGSERIAL PRIMARY KEY,
+    Peer1 VARCHAR NOT NULL,
+    Peer2 VARCHAR NOT NULL,
+    FOREIGN KEY (Peer1) REFERENCES Peers(Nickname),
+    FOREIGN KEY (Peer2) REFERENCES Peers(Nickname),
+    CHECK (Peer1 < Peer2)               -- Избегаем дубликатов (alice-bob и bob-alice)
+);
+
+-- Таблица Recommendations: рекомендации пиров друг другу
+CREATE TABLE Recommendations (
+    ID BIGSERIAL PRIMARY KEY,
+    Peer VARCHAR NOT NULL,              -- Кто рекомендует
+    RecommendedPeer VARCHAR NOT NULL,   -- Кого рекомендуют
+    FOREIGN KEY (Peer) REFERENCES Peers(Nickname),
+    FOREIGN KEY (RecommendedPeer) REFERENCES Peers(Nickname),
+    CHECK (Peer <> RecommendedPeer)     -- Нельзя рекомендовать себя
+);
+
+-- Таблица XP: полученный опыт (XP) за успешные проверки
+CREATE TABLE XP (
+    ID BIGSERIAL PRIMARY KEY,
+    "Check" BIGINT NOT NULL,            -- Ссылка на проверку
+    XPAmount INTEGER NOT NULL CHECK (XPAmount >= 0),  -- Количество полученного XP
+    FOREIGN KEY ("Check") REFERENCES Checks(ID)
+);
+
+-- Таблица TimeTracking: учёт времени нахождения на кампусе
+CREATE TABLE TimeTracking (
+    ID BIGSERIAL PRIMARY KEY,
+    Peer VARCHAR NOT NULL,              -- Пир
+    Date DATE NOT NULL,                 -- Дата
+    Time TIME NOT NULL,                 -- Время входа/выхода
+    State INTEGER NOT NULL CHECK (State IN (1, 2)),  -- 1 = вход, 2 = выход
+    FOREIGN KEY (Peer) REFERENCES Peers(Nickname)
+);
+
