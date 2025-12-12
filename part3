@@ -1,0 +1,68 @@
+Задание: Реализовать функции для получения различных статистик и отчётов
+
+-- Пример реализации нескольких популярных задач (добавьте остальные по списку проекта)
+
+-- Задача 1: Вывод таблицы TransferredPoints в читаемом виде
+-- Показывает, сколько очков один пир передал другому (+ и -)
+CREATE OR REPLACE FUNCTION fn_transferred_points_readable()
+RETURNS TABLE (Peer1 VARCHAR, Peer2 VARCHAR, PointsChange INTEGER) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT CheckingPeer AS Peer1, CheckedPeer AS Peer2, PointsAmount::INTEGER AS PointsChange
+    FROM TransferredPoints
+    UNION ALL
+    SELECT CheckedPeer AS Peer1, CheckingPeer AS Peer2, -PointsAmount::INTEGER
+    FROM TransferredPoints
+    ORDER BY Peer1, PointsChange DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Задача 2: Пиры, получившие максимум XP по каждой задаче
+CREATE OR REPLACE FUNCTION fn_max_xp_per_task()
+RETURNS TABLE (Peer VARCHAR, Task VARCHAR, XP INTEGER) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT c.Peer, c.Task, x.XPAmount::INTEGER AS XP
+    FROM Checks c
+    JOIN XP x ON x."Check" = c.ID
+    WHERE (c.Task, x.XPAmount) IN (
+        SELECT c2.Task, MAX(x2.XPAmount)
+        FROM Checks c2 JOIN XP x2 ON x2."Check" = c2.ID
+        GROUP BY c2.Task
+    )
+    ORDER BY Task;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Задача 3: Пиры, которые не выходили с кампуса весь указанный день
+CREATE OR REPLACE FUNCTION fn_peers_not_left_campus(target_day DATE)
+RETURNS TABLE (Peer VARCHAR) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT tt.Peer
+    FROM TimeTracking tt
+    WHERE tt.Date = target_day AND tt.State = 1
+    GROUP BY tt.Peer
+    HAVING BOOL_AND(
+        NOT EXISTS (
+            SELECT 1 FROM TimeTracking tt2
+            WHERE tt2.Peer = tt.Peer
+              AND tt2.Date = target_day
+              AND tt2.State = 2
+              AND tt2.Time > tt.Time
+        )
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Задача 4: Изменение количества очков у каждого пира (на основе TransferredPoints)
+CREATE OR REPLACE FUNCTION fn_points_change()
+RETURNS TABLE (Peer VARCHAR, PointsChange BIGINT) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT Peer1 AS Peer, SUM(PointsChange) AS PointsChange
+    FROM fn_transferred_points_readable()
+    GROUP BY Peer1
+    ORDER BY PointsChange DESC;
+END;
+$$ LANGUAGE plpgsql;
