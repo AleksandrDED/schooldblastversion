@@ -1,0 +1,119 @@
+Задание: 
+-- 1. Создать процедуры для работы с метаданными
+
+===================================================================
+-- 1. Процедура удаления всех таблиц в текущей базе
+-- ===================================================================
+CREATE OR REPLACE PROCEDURE prc_drop_all_tables()
+LANGUAGE plpgsql AS $$
+DECLARE
+    rec RECORD;
+BEGIN
+    FOR rec IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+        EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(rec.tablename) || ' CASCADE';
+    END LOOP;
+    RAISE NOTICE 'Все таблицы в текущей базе удалены';
+END;
+$$;
+
+-- ===================================================================
+-- 2. Процедура вывода списка всех скалярных функций с параметрами
+-- ===================================================================
+CREATE OR REPLACE PROCEDURE prc_list_scalar_functions()
+LANGUAGE plpgsql AS $$
+DECLARE
+    rec RECORD;
+BEGIN
+    RAISE NOTICE '=== Скалярные функции в схеме public ===';
+    FOR rec IN
+        SELECT proname AS func_name,
+               pg_get_function_arguments(oid) AS params,
+               pg_get_function_result(oid) AS return_type
+        FROM pg_proc
+        WHERE pronamespace = 'public'::regnamespace
+          AND prokind = 'f'                          -- только обычные функции (не агрегатные, не оконные)
+          AND prorettype <> 'void'::regtype         -- возвращают значение (скалярные)
+        ORDER BY proname
+    LOOP
+        RAISE NOTICE 'Функция: % (%) → %',
+                     rec.func_name,
+                     COALESCE(rec.params, 'без параметров'),
+                     rec.return_type;
+    END LOOP;
+
+    IF NOT FOUND THEN
+        RAISE NOTICE 'Скалярные функции не найдены';
+    END IF;
+END;
+$$;
+
+-- ===================================================================
+-- 3. Процедура удаления всех DML-триггеров в текущей схеме
+-- ===================================================================
+CREATE OR REPLACE PROCEDURE prc_drop_all_triggers()
+LANGUAGE plpgsql AS $$
+DECLARE
+    rec RECORD;
+BEGIN
+    RAISE NOTICE 'Удаление триггеров...';
+    FOR rec IN
+        SELECT trigger_name, event_object_table
+        FROM information_schema.triggers
+        WHERE trigger_schema = 'public'
+    LOOP
+        EXECUTE 'DROP TRIGGER IF EXISTS ' || quote_ident(rec.trigger_name) ||
+                ' ON ' || quote_ident(rec.event_object_table);
+        RAISE NOTICE 'Удалён триггер: % на таблице %', rec.trigger_name, rec.event_object_table;
+    END LOOP;
+
+    RAISE NOTICE 'Все DML-триггеры удалены';
+END;
+$$;
+
+-- ===================================================================
+-- 4. Процедура поиска объектов (функций, процедур, триггеров), 
+--    содержащих заданную строку в определении
+-- ===================================================================
+CREATE OR REPLACE PROCEDURE prc_find_objects_by_string(search_str TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+    rec RECORD;
+BEGIN
+    IF search_str IS NULL OR search_str = '' THEN
+        RAISE EXCEPTION 'Строка поиска не может быть пустой';
+    END IF;
+
+    RAISE NOTICE '=== Объекты, содержащие строку "%" ===', search_str;
+
+    -- Поиск в функциях и процедурах
+    FOR rec IN
+        SELECT proname AS obj_name, prokind AS obj_kind
+        FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'public'
+          AND pg_get_functiondef(p.oid) ILIKE '%' || search_str || '%'
+    LOOP
+        RAISE NOTICE '% (%)', rec.obj_name,
+            CASE rec.obj_kind
+                WHEN 'f' THEN 'FUNCTION'
+                WHEN 'p' THEN 'PROCEDURE'
+                WHEN 'a' THEN 'AGGREGATE'
+                ELSE 'WINDOW'
+            END;
+    END LOOP;
+
+    -- Поиск в триггерах
+    FOR rec IN
+        SELECT tgname AS obj_name
+        FROM pg_trigger t
+        JOIN pg_class c ON t.tgrelid = c.oid
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE n.nspname = 'public'
+          AND pg_get_triggerdef(t.oid) ILIKE '%' || search_str || '%'
+    LOOP
+        RAISE NOTICE '% (TRIGGER)', rec.obj_name;
+    END LOOP;
+
+    RAISE NOTICE 'Поиск завершён';
+END;
+$$;
